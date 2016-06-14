@@ -1,0 +1,170 @@
+/*
+
+ This piece of code is written by
+    Jianing Yang <jianingy.yang@gmail.com>
+ with love and passion!
+
+        H A P P Y    H A C K I N G !
+              _____               ______
+     ____====  ]OO|_n_n__][.      |    |
+    [________]_|__|________)<     |YANG|
+     oo    oo  'oo OOOO-| oo\\_   ~o~~o~
+ +--+--+--+--+--+--+--+--+--+--+--+--+--+
+                             14 Jun, 2016
+
+*/
+
+extern crate docopt;
+extern crate inotify;
+extern crate rustc_serialize;
+
+
+use docopt::Docopt;
+use inotify::INotify;
+use inotify::ffi::*;
+use std::collections::HashMap;
+use std::env;
+use std::io;
+use std::io::Write;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::thread::sleep;
+use std::time::Duration;
+use std::process::{Command, Stdio};
+
+
+const USAGE: &'static str = "
+Usage: dynsync [options] <dest>...
+
+Options:
+    --debug                 enable debug
+    --rsync=<path>          path to rsync binary [default: /usr/bin/rsync]
+    --root=<directory>      root directory to watch
+    -h, --help              show this message
+    -v, --version           show version
+
+Bug reports to jianingy.yang@gmail.com
+";
+
+#[derive(Debug, RustcDecodable)]
+struct Options {
+    flag_debug: bool,
+    flag_root: String,
+    flag_rsync: String,
+    arg_dest: Vec<String>,
+}
+
+fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) {
+
+    let filelist = queue.iter().map(|x| {
+        let mut r = String::from(x.to_str().unwrap());
+        r.push('\n');
+        r
+    }).collect::<String>();
+
+    for dest in &opts.arg_dest {
+        let process = match Command::new(opts.flag_rsync.as_str())
+            .arg("-a")
+            .arg("--relative")
+            .arg("--files-from=-")
+            .arg(".")
+            .arg(dest)
+            .stdin(Stdio::piped()).spawn() {
+                Err(why) => {
+                    println!("couldn't spawn rsync to {}: {}", dest, why);
+                    continue;
+                },
+                Ok(process) => process,
+            };
+
+        process.stdin.unwrap().write_all(filelist.as_bytes()).unwrap();
+    }
+    queue.clear();
+    println!("transfer queue is empty now");
+}
+
+fn main() {
+    let opts: Options = Docopt::new(USAGE)
+        .and_then(|d| d.decode())
+        .unwrap_or_else(|e| e.exit());
+    let mut ino = INotify::init().unwrap();
+    let mut watchlist = HashMap::new();
+    let watch_events = IN_MOVED_TO | IN_CLOSE_WRITE;
+
+    // change working directory
+    env::set_current_dir(Path::new(opts.flag_root.as_str())).unwrap();
+
+    // add root to watch list
+    let root = PathBuf::from(".");
+    let root_wd = ino.add_watch(root.as_path(), watch_events).unwrap();
+    watchlist.insert(root_wd, root.clone());
+
+
+    // add subdirectories under root
+    let mut ready = vec![root.clone()];
+
+    while !ready.is_empty() {
+        let mut working = ready.clone();
+        ready.clear();
+        while let Some(cwd) = working.pop() {
+            for entry in fs::read_dir(cwd.as_path()).unwrap() {
+                let entry = entry.unwrap();
+                if fs::metadata(entry.path()).unwrap().is_dir() {
+                    ready.push(entry.path());
+                }
+            }
+            let wd = ino.add_watch(cwd.as_path(), watch_events).unwrap();
+            watchlist.insert(wd, cwd.clone());
+        }
+    }
+
+    // wait for events and processing
+    let mut transfer_queue: Vec<PathBuf> = Vec::new();
+    // let mut waiting_queue: Vec<PathBuf> = Vec::new();
+    loop {
+        let mut subdirs: Vec<PathBuf> = Vec::new();
+
+        {
+            // check if there is any file changed.
+            let events = ino.available_events().unwrap();
+
+            for event in events.iter() {
+                if event.is_dir() {
+                    if event.is_create() {
+                        // when a new directory created, add it to
+                        // the watchlist.
+                        let mut dirname = watchlist.get(&event.wd)
+                            .unwrap().clone();
+                        dirname.push(&event.name);
+                        subdirs.push(dirname);
+                    }
+                } else {
+                    if event.is_close_write() || event.is_moved_to() {
+                        let mut dirname = watchlist.get(&event.wd)
+                            .unwrap().clone();
+                        dirname.push(&event.name);
+                        transfer_queue.push(dirname.clone());
+                        println!("preparing to synchronizing `{}'. \
+                                  current transfer queue length is {}.",
+                                 dirname.to_str().unwrap(),
+                                 transfer_queue.len());
+                    }
+                }
+            }
+        }
+
+        while let Some(dirname) = subdirs.pop() {
+            println!("adding new directory `{}' to watchlist",
+                     dirname.to_str().unwrap());
+            let wd = ino.add_watch(dirname.as_path(), watch_events).unwrap();
+            watchlist.insert(wd, dirname);
+        }
+        if !transfer_queue.is_empty() {
+            do_sync(&opts, &mut transfer_queue);
+        } else {
+            sleep(Duration::from_millis(1000));
+        }
+
+    }
+
+}

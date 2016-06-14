@@ -1,0 +1,9 @@
+[package]
+name = "dynsync"
+version = "0.1.0"
+authors = ["Jianing Yang <jianingy.yang@gmail.com>"]
+
+[dependencies]
+inotify = "*"
+docopt = "0.6"
+rustc-serialize = "0.3"
