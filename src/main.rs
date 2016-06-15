@@ -37,11 +37,13 @@ const USAGE: &'static str = "
 Usage: dynsync [options] <dest>...
 
 Options:
-    --debug                 enable debug
-    --rsync=<path>          path to rsync binary [default: /usr/bin/rsync]
-    --root=<directory>      root directory to watch
-    -h, --help              show this message
-    -v, --version           show version
+    --debug                       enable debug
+    --rsync=<path>                path to rsync binary
+                                  [default: /usr/bin/rsync]
+    --root=<directory>            root directory to watch
+    -P, --rsync-params=<params>   rsync parameters separated by whitespaces
+    -h, --help                    show this message
+    -v, --version                 show version
 
 Bug reports to jianingy.yang@gmail.com
 ";
@@ -51,6 +53,7 @@ struct Options {
     flag_debug: bool,
     flag_root: String,
     flag_rsync: String,
+    flag_rsync_params: String,
     arg_dest: Vec<String>,
 }
 
@@ -63,21 +66,38 @@ fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) {
     }).collect::<String>();
 
     for dest in &opts.arg_dest {
-        let process = match Command::new(opts.flag_rsync.as_str())
-            .arg("-a")
-            .arg("--relative")
-            .arg("--files-from=-")
-            .arg(".")
-            .arg(dest)
-            .stdin(Stdio::piped()).spawn() {
-                Err(why) => {
-                    println!("couldn't spawn rsync to {}: {}", dest, why);
-                    continue;
-                },
-                Ok(process) => process,
-            };
+        let rsync_params = opts.flag_rsync_params
+            .split_whitespace()
+            .collect::<Vec<_>>();
 
-        process.stdin.unwrap().write_all(filelist.as_bytes()).unwrap();
+        let mut cmd = Command::new(opts.flag_rsync.as_str());
+        cmd.arg("-a").arg("--relative").arg("--files-from=-")
+            .args(&rsync_params)
+            .arg(".")
+            .arg(dest);
+        println!("calling {:?}", cmd);
+        let mut process = match cmd.stdin(Stdio::piped()).spawn() {
+            Err(why) => {
+                println!("couldn't spawn rsync of {}: {}", dest, why);
+                continue;
+            },
+            Ok(process) => process,
+        };
+        match process.stdin {
+            Some(ref mut stdin) => {
+                stdin.write_all(filelist.as_bytes()).unwrap()
+            },
+            None => {
+                println!("couldn't send file list to rsync of {}", dest);
+                continue;
+            }
+        }
+        match process.wait() {
+            Err(why) => {
+                println!("rsync of {} exit with error: {}", dest, why);
+            },
+            Ok(_) => (),
+        }
     }
     queue.clear();
     println!("transfer queue is empty now");
