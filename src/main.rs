@@ -16,21 +16,24 @@
 
 extern crate docopt;
 extern crate inotify;
+extern crate regex;
 extern crate rustc_serialize;
-
 
 use docopt::Docopt;
 use inotify::INotify;
 use inotify::ffi::*;
 use std::collections::HashMap;
 use std::env;
-use std::io;
 use std::io::Write;
 use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 use std::process::{Command, Stdio};
+use regex::Regex;
+use regex::RegexSet;
 
 
 const USAGE: &'static str = "
@@ -41,6 +44,7 @@ Options:
     --rsync=<path>                path to rsync binary
                                   [default: /usr/bin/rsync]
     --root=<directory>            root directory to watch
+    -x, --ignore-file=<file>      a file of regular expressions of filenames to ignore
     -P, --rsync-params=<params>   rsync parameters separated by whitespaces
     -h, --help                    show this message
     -v, --version                 show version
@@ -54,6 +58,7 @@ struct Options {
     flag_root: String,
     flag_rsync: String,
     flag_rsync_params: String,
+    flag_ignore_file: String,
     arg_dest: Vec<String>,
 }
 
@@ -103,6 +108,17 @@ fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) {
     println!("transfer queue is empty now");
 }
 
+fn read_ignore_regex(opts: &Options) -> Option<RegexSet> {
+    if opts.flag_ignore_file.is_empty() {
+        return None;
+    }
+    let mut file = File::open(
+        Path::new(opts.flag_ignore_file.as_str())).unwrap();
+    let mut content = String::new();
+    file.read_to_string(&mut content).unwrap();
+    Some(RegexSet::new(content.lines()).unwrap())
+}
+
 fn main() {
     let opts: Options = Docopt::new(USAGE)
         .and_then(|d| d.decode())
@@ -111,6 +127,10 @@ fn main() {
     let mut watchlist = HashMap::new();
     let watch_events = IN_MOVED_TO | IN_CLOSE_WRITE;
 
+    // read ignore regular expressions
+    let ignore_regex = read_ignore_regex(&opts);
+
+    println!("{:?}", ignore_regex);
     // change working directory
     env::set_current_dir(Path::new(opts.flag_root.as_str())).unwrap();
 
@@ -149,6 +169,11 @@ fn main() {
             let events = ino.available_events().unwrap();
 
             for event in events.iter() {
+                if let Some(rex) = ignore_regex.clone() {
+                    if rex.is_match(event.name.as_str()) {
+                        continue;
+                    }
+                }
                 if event.is_dir() {
                     if event.is_create() {
                         // when a new directory created, add it to
