@@ -24,6 +24,7 @@ use inotify::INotify;
 use inotify::ffi::*;
 use std::collections::HashMap;
 use std::env;
+use std::error::Error;
 use std::io::Write;
 use std::fs;
 use std::fs::File;
@@ -32,7 +33,6 @@ use std::path::{Path, PathBuf};
 use std::thread::sleep;
 use std::time::Duration;
 use std::process::{Command, Stdio};
-use regex::Regex;
 use regex::RegexSet;
 
 
@@ -44,6 +44,7 @@ Options:
     --rsync=<path>                path to rsync binary
                                   [default: /usr/bin/rsync]
     --root=<directory>            root directory to watch
+    -i, --interval=<time>         check interval (in ms)  [default: 1000]
     -x, --ignore-file=<file>      a file of regular expressions of filenames to ignore
     -P, --rsync-params=<params>   rsync parameters separated by whitespaces
     -h, --help                    show this message
@@ -59,16 +60,19 @@ struct Options {
     flag_rsync: String,
     flag_rsync_params: String,
     flag_ignore_file: String,
+    flag_interval: u64,
     arg_dest: Vec<String>,
 }
 
-fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) {
+fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) -> Result<(), Box<Error>> {
 
-    let filelist = queue.iter().map(|x| {
-        let mut r = String::from(x.to_str().unwrap());
-        r.push('\n');
-        r
-    }).collect::<String>();
+    let filelist = queue.iter()
+        .map(|x| x.to_str())
+        .filter(|x| x.is_some())
+        .filter(|x| x.is_some())
+        .map(|x| x.unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
 
     for dest in &opts.arg_dest {
         let rsync_params = opts.flag_rsync_params
@@ -90,7 +94,7 @@ fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) {
         };
         match process.stdin {
             Some(ref mut stdin) => {
-                stdin.write_all(filelist.as_bytes()).unwrap()
+                try!(stdin.write_all(filelist.as_bytes()))
             },
             None => {
                 println!("couldn't send file list to rsync of {}", dest);
@@ -106,6 +110,7 @@ fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) {
     }
     queue.clear();
     println!("transfer queue is empty now");
+    Ok(())
 }
 
 fn read_ignore_regex(opts: &Options) -> Option<RegexSet> {
@@ -125,12 +130,11 @@ fn main() {
         .unwrap_or_else(|e| e.exit());
     let mut ino = INotify::init().unwrap();
     let mut watchlist = HashMap::new();
-    let watch_events = IN_MOVED_TO | IN_CLOSE_WRITE;
+    let watch_events = IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE;
 
     // read ignore regular expressions
     let ignore_regex = read_ignore_regex(&opts);
 
-    println!("{:?}", ignore_regex);
     // change working directory
     env::set_current_dir(Path::new(opts.flag_root.as_str())).unwrap();
 
@@ -205,9 +209,9 @@ fn main() {
             watchlist.insert(wd, dirname);
         }
         if !transfer_queue.is_empty() {
-            do_sync(&opts, &mut transfer_queue);
+            do_sync(&opts, &mut transfer_queue).unwrap();
         } else {
-            sleep(Duration::from_millis(1000));
+            sleep(Duration::from_millis(opts.flag_interval));
         }
 
     }
