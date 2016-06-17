@@ -89,6 +89,7 @@ fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) -> Result<(), Box<Error>> {
             .arg(".")
             .arg(dest);
         debug!("calling {:?}", cmd);
+        let rsync_started_at = time::now();
         let mut process = match cmd.stdin(Stdio::piped()).spawn() {
             Err(why) => {
                 warn!("couldn't spawn rsync of {}: {}", dest, why);
@@ -111,6 +112,9 @@ fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) -> Result<(), Box<Error>> {
             },
             Ok(_) => (),
         }
+        let rsync_duration = time::now() - rsync_started_at;
+        info!("rsync of {} finished in {} ms",
+              dest, rsync_duration.num_milliseconds())
     }
     queue.clear();
     info!("transfer queue is empty now");
