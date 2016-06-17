@@ -14,10 +14,14 @@
 
 */
 
+#[macro_use] extern crate log;
 extern crate docopt;
+extern crate env_logger;
 extern crate inotify;
 extern crate regex;
 extern crate rustc_serialize;
+extern crate time;
+
 
 use docopt::Docopt;
 use inotify::INotify;
@@ -44,7 +48,7 @@ Options:
     --rsync=<path>                path to rsync binary
                                   [default: /usr/bin/rsync]
     --root=<directory>            root directory to watch
-    -i, --interval=<time>         check interval (in ms)  [default: 1000]
+    -i, --interval=<time>         check interval (in ms)  [default: 0]
     -x, --ignore-file=<file>      a file of regular expressions of filenames to ignore
     -P, --rsync-params=<params>   rsync parameters separated by whitespaces
     -h, --help                    show this message
@@ -84,10 +88,10 @@ fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) -> Result<(), Box<Error>> {
             .args(&rsync_params)
             .arg(".")
             .arg(dest);
-        println!("calling {:?}", cmd);
+        debug!("calling {:?}", cmd);
         let mut process = match cmd.stdin(Stdio::piped()).spawn() {
             Err(why) => {
-                println!("couldn't spawn rsync of {}: {}", dest, why);
+                warn!("couldn't spawn rsync of {}: {}", dest, why);
                 continue;
             },
             Ok(process) => process,
@@ -97,19 +101,19 @@ fn do_sync(opts: &Options, queue: &mut Vec<PathBuf>) -> Result<(), Box<Error>> {
                 try!(stdin.write_all(filelist.as_bytes()))
             },
             None => {
-                println!("couldn't send file list to rsync of {}", dest);
+                warn!("couldn't send file list to rsync of {}", dest);
                 continue;
             }
         }
         match process.wait() {
             Err(why) => {
-                println!("rsync of {} exit with error: {}", dest, why);
+                warn!("rsync of {} exit with error: {}", dest, why);
             },
             Ok(_) => (),
         }
     }
     queue.clear();
-    println!("transfer queue is empty now");
+    info!("transfer queue is empty now");
     Ok(())
 }
 
@@ -128,6 +132,10 @@ fn main() {
     let opts: Options = Docopt::new(USAGE)
         .and_then(|d| d.decode())
         .unwrap_or_else(|e| e.exit());
+
+    // initialize logger
+    env_logger::init().unwrap();
+
     let mut ino = INotify::init().unwrap();
     let mut watchlist = HashMap::new();
     let watch_events = IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE;
@@ -170,7 +178,7 @@ fn main() {
 
         {
             // check if there is any file changed.
-            let events = ino.available_events().unwrap();
+            let events = ino.wait_for_events().unwrap();
 
             for event in events.iter() {
                 if let Some(rex) = ignore_regex.clone() {
@@ -193,18 +201,18 @@ fn main() {
                             .unwrap().clone();
                         dirname.push(&event.name);
                         transfer_queue.push(dirname.clone());
-                        println!("preparing to synchronizing `{}'. \
-                                  current transfer queue length is {}.",
-                                 dirname.to_str().unwrap(),
-                                 transfer_queue.len());
+                        info!("preparing to synchronizing `{}'. \
+                               current transfer queue length is {}.",
+                              dirname.to_str().unwrap(),
+                              transfer_queue.len());
                     }
                 }
             }
         }
 
         while let Some(dirname) = subdirs.pop() {
-            println!("adding new directory `{}' to watchlist",
-                     dirname.to_str().unwrap());
+            info!("adding new directory `{}' to watchlist",
+                  dirname.to_str().unwrap());
             let wd = ino.add_watch(dirname.as_path(), watch_events).unwrap();
             watchlist.insert(wd, dirname);
         }
