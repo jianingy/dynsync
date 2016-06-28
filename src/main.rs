@@ -42,6 +42,8 @@ use regex::RegexSet;
 
 const USAGE: &'static str = "
 Usage: dynsync [options] <dest>...
+       dynsync (--help | --version)
+
 
 Options:
     --debug                       enable debug
